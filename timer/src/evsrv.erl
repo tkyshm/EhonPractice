@@ -7,6 +7,52 @@
                 pid,
                 timeout={{1970,1,1},{0,0,0}}}).
 
+start_link() ->
+    register(?MODULE, Pid=spawn_link(?MODULE, init, [])),
+    Pid.
+
+terminate() ->
+    ?MODULE ! shutdown.
+
+subscribe(Pid) ->
+    Ref = erlang:monitor(process, whereis(?MODULE)),
+    ?MODULE ! {self(), Ref, {subscribe, Pid}},
+    receive
+        {Ref, ok } ->
+            {ok, Ref};
+        {'DOWN', Ref, process, _Pid, Reason} ->
+            {error, Reason}
+    after 5000 ->
+        {error, timeout}
+    end.
+
+add_event(Name, Description, Timeout) ->
+    Ref = make_ref(),
+    ?MODULE ! {self(), Ref, {add, Name, Description, Timeout}},
+    receive
+        {Ref, {error, Reason}} -> erlang:error(Reason);
+        {Ref, Msg} -> Msg
+    after 5000 ->
+        {error, timeout}
+    end.
+
+cancel(Name) -> 
+    Ref = make_ref(),
+    ?MODULE ! {self(), Ref, {cancel, Name}},
+    receive 
+        {Ref, ok} -> ok
+    after 5000 ->
+        {error, timeout}
+    end.
+
+listen(Delay) ->
+    receive
+        M = {done, _Name, _Description} ->
+            [M | listen(0)]
+    after Delay * 1000 ->
+          []
+    end.
+
 init() ->
     loop(#state{events=orddict:new(), clients=orddict:new()}).
 
@@ -44,14 +90,29 @@ loop(S = #state{}) ->
             Pid ! {MsgRef, ok},
             loop(S#state{events = Events});
         {done, Name} ->
+            case orddict:find(Name, S#state.events) of
+                {ok, E } ->
+                    send_to_clients({done, E#event.name, E#event.description},
+                                    S#state.clients),
+                    NewEvents = orddict:erase(Name, S#state.events),
+                    loop(S#state{events=NewEvents});
+                error ->
+                    %%
+                    loop(S)
+            end;
         shutdown ->
+            exit(shutdown);
         {'DOWN', Ref, process, _Pid, _Reason} ->
+            loop(S#state{clients=orrdict:erase(Ref, S#state.clients)});
         code_change ->
+            ?MODULE:loop(S);
         Unknown ->
             io:format("Unknown message: ~p~n", [Unknown]),
             loop(S)
     end.
 
+send_to_clients(Msg, ClientDist) ->
+    orddict:map(fun(_Ref, Pid) -> Pid ! Msg end, ClientDist).
 
 valid_datetime({Date, Time})->
     try
