@@ -1,68 +1,39 @@
 -module(koneko2_server).
+
 -export([start_link/0, order_cat/4, return_cat/2, close_shop/1]).
+-export([init/1, handle_call/3, handle_cast/2]).
 
 -record(neko, {name, color=green, description}).
 
-start_link() ->
-    spawn_link(fun init/0).
+start_link() -> my_server:start_link(?MODULE, []).
 
 order_cat(Pid, Name, Color, Description) ->
-    Ref = erlang:monitor(process, Pid),
-    Pid ! {self(), Ref, {order, Name, Color, Description}},
-    receive
-        {Ref, Cat} ->
-            erlang:demonitor(Ref, [flush]),
-            Cat;
-        {'DOWN', Ref, process, Pid, Reason} ->
-            erlang:error(Reason)
-    after 5000 ->
-        erlang:error(timeout)
-    end.
+    my_server:call(Pid, {order, Name, Color, Description}).
 
-%% This call is asynchronous.
 return_cat(Pid, Cat = #neko{}) ->
-    Pid ! {return, Cat},
-    ok.
+    my_server:cast(Pid, {return, Cat}).
 
 close_shop(Pid) ->
-    Ref = erlang:monitor(process, Pid),
-    Pid ! {self(), Ref, terminate},
-    receive
-        {Ref, ok} ->
-            erlang:demonitor(Ref, [flush]),
-            ok;
-        {'DOWN', Ref, process, Pid, Reason} ->
-            erlang:error(Reason)
-    after 5000 ->
-        erlang:error(timeout)
-    end.
+    my_server:call(Pid, terminate).
 
-init() -> loop([]).
+init([]) ->
+    [].
 
-loop(Cats) ->
-    receive
-        {Pid, Ref, {order, Name, Color, Description}} ->
-            if Cats =:= [] ->
-                   Pid ! {Ref, make_cat(Name, Color, Description)},
-                   loop(Cats);
-               Cats =/= [] ->
-                   Pid ! {Ref, hd(Cats)},
-                   loop(tl(Cats))
-            end;
-        {return, Cat = #neko{}} ->
-            loop([Cat|Cats]);
-        {Pid, Ref, terminate} ->
-            Pid ! {Ref, ok},
-            terminate(Cats);
-        Unknown ->
-            io:format("Unknown message: ~p~n", [Unknown]),
-            loop(Cats)
-    end.
+handle_call({order, Name, Color, Description}, From, Cats) -> 
+    if Cats =:= [] ->
+           my_server:reply(From, make_cat(Name, Color, Description)),
+           Cats;
+       Cats =/= [] ->
+           my_server:reply(From, hd(Cats)),
+           tl(Cats)
+    end;
+handle_call(terminate, From, Cats) ->
+    my_server:reply(From, ok),
+    terminate(Cats).
+handle_cast({return, Cat = #neko{}}, Cats) -> [Cat|Cats].
 
-make_cat(Name, Color, Description) ->
-    #neko{name=Name, color=Color, description=Description}.
 
-terminate(Cats) ->
-    [io:format("~p was set free. ~n", [C#neko.name]) || C <- Cats ],
-    ok.
-    
+make_cat(Name, Color, Description) -> #neko{name=Name,color=Color,description=Description}.
+terminate(Cats) -> 
+    [io:format("~p was set free.",[C#neko.name]) || C <- Cats],
+    exit(normal).
